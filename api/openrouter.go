@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"openrouter-bot/config"
-	configs "openrouter-bot/config"
 	"openrouter-bot/lang"
 	"openrouter-bot/user"
 	"strings"
@@ -30,14 +29,11 @@ type APIResponse struct {
 	Data []Model `json:"data"`
 }
 
-func GetFreeModels() (string, error) {
-	manager, err := config.NewManager("./config.yaml")
-	if err != nil {
-		log.Fatalf("Error initializing config manager: %v", err)
-	}
-	conf := manager.GetConfig()
+// GetFreeModels теперь принимает конфиг напрямую — не создаёт новый Manager при каждом вызове
+func GetFreeModels(conf *config.Config) (string, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
 
-	resp, err := http.Get(conf.OpenAIBaseURL + "/models")
+	resp, err := client.Get(conf.OpenAIBaseURL + "/models")
 	if err != nil {
 		return "", fmt.Errorf("error get models: %v", err)
 	}
@@ -49,47 +45,33 @@ func GetFreeModels() (string, error) {
 	}
 
 	var apiResponse APIResponse
-	err = json.Unmarshal(body, &apiResponse)
-	if err != nil {
+	if err = json.Unmarshal(body, &apiResponse); err != nil {
 		return "", fmt.Errorf("error parse json: %v", err)
 	}
 
 	var result strings.Builder
 	for _, model := range apiResponse.Data {
-		// Filter by price
 		if model.Pricing.Prompt == "0" {
-			// escapedDesc := strings.ReplaceAll(model.Description, "*", "\\*")
-			// escapedDesc = strings.ReplaceAll(escapedDesc, "_", "\\_")
-			// result.WriteString(fmt.Sprintf("%s - %s\n", model.ID, escapedDesc))
 			result.WriteString(fmt.Sprintf("➡ `%s`\n", model.ID))
-			// result.WriteString(fmt.Sprintf("➡ `/set_model %s`\n", model.ID))
 		}
 	}
 	return result.String(), nil
 }
 
+// HandleChatGPTStreamResponse — принимает конфиг напрямую, добавляет reply и таймаут
 func HandleChatGPTStreamResponse(
 	bot *tgbotapi.BotAPI,
 	client *openai.Client,
 	message *tgbotapi.Message,
-	config *config.Config,
-	user *user.UsageTracker,
+	conf *config.Config,
+	userStats *user.UsageTracker,
 ) string {
+	// Таймаут на весь запрос — предотвращает вечное зависание
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
-	ctx := context.Background()
-	user.CheckHistory(config.MaxHistorySize, config.MaxHistoryTime)
-	user.LastMessageTime = time.Now()
-
-	err := lang.LoadTranslations("./lang/")
-	if err != nil {
-		log.Fatalf("Error loading translations: %v", err)
-	}
-
-	manager, err := configs.NewManager("./config.yaml")
-	if err != nil {
-		log.Fatalf("Error initializing config manager: %v", err)
-	}
-	conf := manager.GetConfig()
+	userStats.CheckHistory(conf.MaxHistorySize, conf.MaxHistoryTime)
+	userStats.LastMessageTime = time.Now()
 
 	errorMessage := lang.Translate("errorText", conf.Lang)
 
@@ -97,19 +79,19 @@ func HandleChatGPTStreamResponse(
 	messages := []openai.ChatCompletionMessage{
 		{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: user.SystemPrompt,
+			Content: userStats.SystemPrompt,
 		},
 	}
 
-	for _, msg := range user.GetMessages() {
+	for _, msg := range userStats.GetMessages() {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    msg.Role,
 			Content: msg.Content,
 		})
 	}
 
-	if config.Vision == "true" {
-		messages = append(messages, addVisionMessage(bot, message, config))
+	if conf.Vision == "true" {
+		messages = append(messages, addVisionMessage(bot, message, conf))
 	} else {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleUser,
@@ -117,14 +99,13 @@ func HandleChatGPTStreamResponse(
 		})
 	}
 
-	// Готовый нестримовый запрос
 	req := openai.ChatCompletionRequest{
-		Model:            config.Model.ModelName,
-		FrequencyPenalty: float32(config.Model.FrequencyPenalty),
-		PresencePenalty:  float32(config.Model.PresencePenalty),
-		Temperature:      float32(config.Model.Temperature),
-		TopP:             float32(config.Model.TopP),
-		MaxTokens:        config.MaxTokens,
+		Model:            conf.Model.ModelName,
+		FrequencyPenalty: float32(conf.Model.FrequencyPenalty),
+		PresencePenalty:  float32(conf.Model.PresencePenalty),
+		Temperature:      float32(conf.Model.Temperature),
+		TopP:             float32(conf.Model.TopP),
+		MaxTokens:        conf.MaxTokens,
 		Messages:         messages,
 		Stream:           false,
 	}
@@ -132,33 +113,41 @@ func HandleChatGPTStreamResponse(
 	resp, err := client.CreateChatCompletion(ctx, req)
 	if err != nil {
 		log.Printf("ChatCompletion error: %v\n", err)
-		msg := tgbotapi.NewMessage(message.Chat.ID, errorMessage)
-		bot.Send(msg)
+		errMsg := tgbotapi.NewMessage(message.Chat.ID, errorMessage)
+		// Цитируем исходное сообщение даже при ошибке
+		errMsg.ReplyToMessageID = message.MessageID
+		bot.Send(errMsg)
 		return ""
 	}
 
 	answer := resp.Choices[0].Message.Content
 
 	// Записываем в историю
-	user.AddMessage(openai.ChatMessageRoleUser, message.Text)
-	user.AddMessage(openai.ChatMessageRoleAssistant, answer)
+	userStats.AddMessage(openai.ChatMessageRoleUser, message.Text)
+	userStats.AddMessage(openai.ChatMessageRoleAssistant, answer)
 
-	// Отправляем ответ одним сообщением
+	// Отправляем ответ с цитированием исходного сообщения
 	safe := tgbotapi.EscapeText(tgbotapi.ModeMarkdown, answer)
 	msg := tgbotapi.NewMessage(message.Chat.ID, safe)
 	msg.ParseMode = tgbotapi.ModeMarkdown
-	bot.Send(msg)
-	
+	msg.ReplyToMessageID = message.MessageID // ← FIX: цитируем сообщение
+
+	if _, err := bot.Send(msg); err != nil {
+		// Fallback: если Markdown не парсится — отправляем plain text
+		log.Printf("Markdown send error: %v, retrying as plain text", err)
+		fallback := tgbotapi.NewMessage(message.Chat.ID, answer)
+		fallback.ReplyToMessageID = message.MessageID
+		bot.Send(fallback)
+	}
+
 	return resp.ID
 }
 
-func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, config *config.Config) openai.ChatCompletionMessage {
+func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, conf *config.Config) openai.ChatCompletionMessage {
 	if len(message.Photo) > 0 {
-		// Assuming you want the largest photo size
 		photoSize := message.Photo[len(message.Photo)-1]
 		fileID := photoSize.FileID
 
-		// Download the photo
 		file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 		if err != nil {
 			log.Printf("Error getting file: %v", err)
@@ -168,11 +157,10 @@ func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, config *c
 			}
 		}
 
-		// Access the file URL
 		fileURL := file.Link(bot.Token)
 		fmt.Println("Photo URL:", fileURL)
 		if message.Text == "" {
-			message.Text = config.VisionPrompt
+			message.Text = conf.VisionPrompt
 		}
 
 		return openai.ChatCompletionMessage{
@@ -186,15 +174,14 @@ func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, config *c
 					Type: openai.ChatMessagePartTypeImageURL,
 					ImageURL: &openai.ChatMessageImageURL{
 						URL:    fileURL,
-						Detail: openai.ImageURLDetail(config.VisionDetails),
+						Detail: openai.ImageURLDetail(conf.VisionDetails),
 					},
 				},
 			},
 		}
-	} else {
-		return openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: message.Text,
-		}
+	}
+	return openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: message.Text,
 	}
 }
