@@ -1,77 +1,58 @@
-// config/manager.go
 package config
 
 import (
 	"log"
+	"os"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/spf13/viper"
 )
 
+// Manager keeps the current config and reloads it when config.yaml changes.
 type Manager struct {
-	config    *Config
-	mutex     sync.RWMutex
-	listeners []chan<- Config
+	path   string
+	mu     sync.RWMutex
+	config *Config
 }
 
 func NewManager(configPath string) (*Manager, error) {
-	// Устанавливаем значения по умолчанию
-
-	viper.SetConfigFile(configPath)
-	viper.AutomaticEnv()
-
-	if err := viper.ReadInConfig(); err != nil {
-		log.Fatalf("Error reading config file, %s", err)
-		return nil, err
-	}
-
-	manager := &Manager{
-		listeners: make([]chan<- Config, 0),
-	}
-
-	// Initial config load
-	config, err := Load()
+	conf, err := Load(configPath)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
 		return nil, err
 	}
-	manager.config = config
+	m := &Manager{path: configPath, config: conf}
 
-	// Setup file watcher
-	viper.WatchConfig()
-	viper.OnConfigChange(func(e fsnotify.Event) {
-		manager.reloadConfig()
-	})
-
-	return manager, nil
+	if configPath == "" {
+		return m, nil
+	}
+	if _, statErr := os.Stat(configPath); statErr != nil {
+		return m, nil
+	}
+	if v, err := newViper(configPath); err == nil {
+		v.OnConfigChange(func(fsnotify.Event) { m.reload() })
+		v.WatchConfig()
+	}
+	return m, nil
 }
 
-func (m *Manager) reloadConfig() {
-	newConfig, err := Load()
+// NewStaticManager wraps a fixed config (used in tests).
+func NewStaticManager(c *Config) *Manager { return &Manager{config: c} }
+
+func (m *Manager) reload() {
+	conf, err := Load(m.path)
 	if err != nil {
-		log.Printf("Failed to reload config: %v", err)
+		log.Printf("Failed to reload config, keeping the previous one: %v", err)
 		return
 	}
-
-	m.mutex.Lock()
-	m.config = newConfig
-	m.mutex.Unlock()
-
-	// Notify all listeners
-	for _, listener := range m.listeners {
-		listener <- *newConfig
-	}
+	m.mu.Lock()
+	m.config = conf
+	m.mu.Unlock()
+	log.Printf("Config reloaded")
 }
 
-func (m *Manager) Subscribe() <-chan Config {
-	ch := make(chan Config, 1)
-	m.listeners = append(m.listeners, ch)
-	return ch
-}
-
+// GetConfig returns the current config. Callers must treat it as read-only.
 func (m *Manager) GetConfig() *Config {
-	m.mutex.RLock()
-	defer m.mutex.RUnlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.config
 }

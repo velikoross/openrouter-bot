@@ -15,5 +15,7 @@ data:
     MAX_HISTORY_SIZE={{ .Values.MAX_HISTORY_SIZE }}
     MAX_HISTORY_TIME={{ .Values.MAX_HISTORY_TIME }}
     GUEST_BUDGET={{ .Values.GUEST_BUDGET }}
-    LANG={{ .Values.LANG }}
+    BOT_LANG={{ .Values.LANG }}
+    BOT_ALIASES={{ .Values.BOT_ALIASES }}
+    MODEL_PRESETS={{ .Values.MODEL_PRESETS }}
     STATS_MIN_ROLE={{ .Values.STATS_MIN_ROLE }}

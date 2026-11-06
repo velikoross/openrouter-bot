@@ -1,3 +1,4 @@
+// Package api contains small HTTP helpers for OpenRouter-compatible APIs.
 package api
 
 import (
@@ -5,183 +6,137 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"openrouter-bot/config"
-	"openrouter-bot/lang"
-	"openrouter-bot/user"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/sashabaranov/go-openai"
 )
 
 type Model struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
-	Pricing     struct {
-		Prompt string `json:"prompt"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ContextLength int    `json:"context_length"`
+	Pricing       struct {
+		Prompt     string `json:"prompt"`
+		Completion string `json:"completion"`
 	} `json:"pricing"`
 }
 
-type APIResponse struct {
-	Data []Model `json:"data"`
+// IsFree reports whether both prompt and completion are free. Models without
+// pricing info (local LLM servers) are not considered free.
+func (m Model) IsFree() bool {
+	return isZero(m.Pricing.Prompt) && (m.Pricing.Completion == "" || isZero(m.Pricing.Completion))
 }
 
-// GetFreeModels теперь принимает конфиг напрямую — не создаёт новый Manager при каждом вызове
-func GetFreeModels(conf *config.Config) (string, error) {
-	client := &http.Client{Timeout: 15 * time.Second}
-
-	resp, err := client.Get(conf.OpenAIBaseURL + "/models")
-	if err != nil {
-		return "", fmt.Errorf("error get models: %v", err)
+func isZero(s string) bool {
+	if s == "" {
+		return false
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("error read response: %v", err)
-	}
-
-	var apiResponse APIResponse
-	if err = json.Unmarshal(body, &apiResponse); err != nil {
-		return "", fmt.Errorf("error parse json: %v", err)
-	}
-
-	var result strings.Builder
-	for _, model := range apiResponse.Data {
-		if model.Pricing.Prompt == "0" {
-			result.WriteString(fmt.Sprintf("➡ `%s`\n", model.ID))
-		}
-	}
-	return result.String(), nil
+	f, err := strconv.ParseFloat(s, 64)
+	return err == nil && f == 0
 }
 
-// HandleChatGPTStreamResponse — принимает конфиг напрямую, добавляет reply и таймаут
-func HandleChatGPTStreamResponse(
-	bot *tgbotapi.BotAPI,
-	client *openai.Client,
-	message *tgbotapi.Message,
-	conf *config.Config,
-	userStats *user.UsageTracker,
-) string {
-	// Таймаут на весь запрос — предотвращает вечное зависание
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	userStats.CheckHistory(conf.MaxHistorySize, conf.MaxHistoryTime)
-	userStats.LastMessageTime = time.Now()
-
-	errorMessage := lang.Translate("errorText", conf.Lang)
-
-	// Формируем историю сообщений
-	messages := []openai.ChatCompletionMessage{
-		{
-			Role:    openai.ChatMessageRoleSystem,
-			Content: userStats.SystemPrompt,
-		},
-	}
-
-	for _, msg := range userStats.GetMessages() {
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
-	}
-
-	if conf.Vision == "true" {
-		messages = append(messages, addVisionMessage(bot, message, conf))
-	} else {
-		messages = append(messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: message.Text,
-		})
-	}
-
-	req := openai.ChatCompletionRequest{
-		Model:            conf.Model.ModelName,
-		FrequencyPenalty: float32(conf.Model.FrequencyPenalty),
-		PresencePenalty:  float32(conf.Model.PresencePenalty),
-		Temperature:      float32(conf.Model.Temperature),
-		TopP:             float32(conf.Model.TopP),
-		MaxTokens:        conf.MaxTokens,
-		Messages:         messages,
-		Stream:           false,
-	}
-
-	resp, err := client.CreateChatCompletion(ctx, req)
-	if err != nil {
-		log.Printf("ChatCompletion error: %v\n", err)
-		errMsg := tgbotapi.NewMessage(message.Chat.ID, errorMessage)
-		// Цитируем исходное сообщение даже при ошибке
-		errMsg.ReplyToMessageID = message.MessageID
-		bot.Send(errMsg)
+// PricePerMillion formats "$prompt/$completion per 1M tokens".
+func (m Model) PricePerMillion() string {
+	p, err1 := strconv.ParseFloat(m.Pricing.Prompt, 64)
+	c, err2 := strconv.ParseFloat(m.Pricing.Completion, 64)
+	if err1 != nil || err2 != nil {
 		return ""
 	}
-
-	answer := resp.Choices[0].Message.Content
-
-	// Записываем в историю
-	userStats.AddMessage(openai.ChatMessageRoleUser, message.Text)
-	userStats.AddMessage(openai.ChatMessageRoleAssistant, answer)
-
-	// Отправляем ответ с цитированием исходного сообщения
-	safe := tgbotapi.EscapeText(tgbotapi.ModeMarkdown, answer)
-	msg := tgbotapi.NewMessage(message.Chat.ID, safe)
-	msg.ParseMode = tgbotapi.ModeMarkdown
-	msg.ReplyToMessageID = message.MessageID // ← FIX: цитируем сообщение
-
-	if _, err := bot.Send(msg); err != nil {
-		// Fallback: если Markdown не парсится — отправляем plain text
-		log.Printf("Markdown send error: %v, retrying as plain text", err)
-		fallback := tgbotapi.NewMessage(message.Chat.ID, answer)
-		fallback.ReplyToMessageID = message.MessageID
-		bot.Send(fallback)
+	if p == 0 && c == 0 {
+		return "free"
 	}
-
-	return resp.ID
+	return fmt.Sprintf("$%s/$%s", trimFloat(p*1e6), trimFloat(c*1e6))
 }
 
-func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, conf *config.Config) openai.ChatCompletionMessage {
-	if len(message.Photo) > 0 {
-		photoSize := message.Photo[len(message.Photo)-1]
-		fileID := photoSize.FileID
+func trimFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
 
-		file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
-		if err != nil {
-			log.Printf("Error getting file: %v", err)
-			return openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleUser,
-				Content: message.Text,
-			}
-		}
+type Client struct {
+	BaseURL string
+	APIKey  string
+	HTTP    *http.Client
+	// RetryDelays for the generation-cost lookup (the generation is usually
+	// not available immediately after the completion finishes).
+	RetryDelays []time.Duration
+}
 
-		fileURL := file.Link(bot.Token)
-		fmt.Println("Photo URL:", fileURL)
-		if message.Text == "" {
-			message.Text = conf.VisionPrompt
-		}
-
-		return openai.ChatCompletionMessage{
-			Role: openai.ChatMessageRoleUser,
-			MultiContent: []openai.ChatMessagePart{
-				{
-					Type: openai.ChatMessagePartTypeText,
-					Text: message.Text,
-				},
-				{
-					Type: openai.ChatMessagePartTypeImageURL,
-					ImageURL: &openai.ChatMessageImageURL{
-						URL:    fileURL,
-						Detail: openai.ImageURLDetail(conf.VisionDetails),
-					},
-				},
-			},
-		}
+func NewClient(baseURL, apiKey string) *Client {
+	return &Client{
+		BaseURL:     strings.TrimRight(baseURL, "/"),
+		APIKey:      apiKey,
+		HTTP:        &http.Client{Timeout: 20 * time.Second},
+		RetryDelays: []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second},
 	}
-	return openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: message.Text,
+}
+
+func (c *Client) get(ctx context.Context, path string, out interface{}) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return 0, err
+	}
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return resp.StatusCode, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		snippet := string(body)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		return resp.StatusCode, fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, snippet)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return resp.StatusCode, fmt.Errorf("GET %s: parse json: %w", path, err)
+	}
+	return resp.StatusCode, nil
+}
+
+// ListModels returns all models sorted by id.
+func (c *Client) ListModels(ctx context.Context) ([]Model, error) {
+	var resp struct {
+		Data []Model `json:"data"`
+	}
+	if _, err := c.get(ctx, "/models", &resp); err != nil {
+		return nil, err
+	}
+	sort.Slice(resp.Data, func(i, j int) bool { return resp.Data[i].ID < resp.Data[j].ID })
+	return resp.Data, nil
+}
+
+// GenerationCost returns the cost of a finished generation in USD. OpenRouter
+// returns 404 for a few seconds after the completion, so it retries.
+func (c *Client) GenerationCost(ctx context.Context, id string) (float64, error) {
+	var resp struct {
+		Data struct {
+			TotalCost float64 `json:"total_cost"`
+		} `json:"data"`
+	}
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		status, err := c.get(ctx, "/generation?id="+id, &resp)
+		if err == nil {
+			return resp.Data.TotalCost, nil
+		}
+		lastErr = err
+		retryable := status == 0 || status == http.StatusNotFound || status == http.StatusTooManyRequests || status >= 500
+		if !retryable || attempt >= len(c.RetryDelays) {
+			return 0, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(c.RetryDelays[attempt]):
+		}
 	}
 }

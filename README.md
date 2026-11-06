@@ -62,7 +62,9 @@ ALLOWED_USER_IDS=
 # Disable guest access (enabled by default)
 GUEST_BUDGET=0
 # Language used for bot responses (supported: EN/RU)
-LANG=EN
+BOT_LANG=EN
+# Short names of the bot for group chats
+BOT_ALIASES=bot
 ```
 
 The list of all available parameters is listed in the [.env.example](https://github.com/shevchukma/openrouter-bot/blob/main/.env.example) file
@@ -72,11 +74,49 @@ The list of all available parameters is listed in the [.env.example](https://git
 ```bash
 docker run -d --name OpenRouter-Bot \
     -v ./.env:/openrouter-bot/.env \
+    -v ./logs:/openrouter-bot/logs \
     --restart unless-stopped \
     velikoross/openrouter-bot:latest
 ```
 
 The image is build for `amd64` and `arm64` (Raspberry Pi) platforms using [docker buildx](https://github.com/docker/buildx).
+
+## Group chats
+
+In a group the bot answers when it is addressed:
+
+- with `/ask question` (or `/pirdun question`); `/ask` sent as a reply to someone's message asks about that message;
+- with a mention `@bot_name question`;
+- with a short name from `BOT_ALIASES`, e.g. `Pirdun, tell a joke` (case-insensitive, must be a separate word);
+- by replying to one of the bot's messages.
+
+Other messages are ignored, as are commands for other bots (`/ask@other_bot`).
+
+> [!IMPORTANT]
+> Bots have **privacy mode** enabled by default: in groups they only see commands with `@bot_name`, mentions and replies. Because of that plain `/ask` and short names may never reach the bot. Disable it: [@BotFather](https://t.me/BotFather) → `/setprivacy` → choose the bot → `Disable`, then **remove the bot from the group and add it again**. Alternatively make the bot a group admin. The bot logs on startup whether privacy mode is on.
+
+Conversation history is kept per user per chat.
+
+## Switching the model from Telegram (admin only)
+
+Only users from `ADMIN_IDS` can use these commands (everyone else is refused, buttons included):
+
+| Command | Action |
+| --- | --- |
+| `/model` | Show current model and the model from config |
+| `/set_model` | Buttons: `MODEL_PRESETS`, recently used models and "default" |
+| `/set_model <id>` | Set a model (validated against the OpenRouter model list, similar ids are suggested on typos) |
+| `/set_model default` | Return to `MODEL` / `config.yaml` |
+| `/get_models` | List free models |
+| `/get_models <text>` | Search all models with prices |
+
+The selected model applies to all chats and is saved to `logs/bot_state.json`, so it survives restarts and `config.yaml` reloads. Mount the `logs` directory as a volume (see `docker-compose.yml`) to keep it when the container is recreated.
+
+## Tests
+
+```bash
+go test -race ./...
+```
 
 ## Build
 

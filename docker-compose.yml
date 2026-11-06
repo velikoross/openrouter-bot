@@ -6,5 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
-      - .env:/openrouter-bot/.env
+      - ./.env:/openrouter-bot/.env
+      # usage statistics and the model selected with /set_model
+      - ./logs:/openrouter-bot/logs
     restart: unless-stopped

@@ -42,12 +42,10 @@ jobs:
       - name: Build and push Docker images for amd64 and arm64
         if: ${{ github.event.inputs.Docker == 'true' }}
         run: |
-          # docker build -t lifailon/openrouter-bot:${{ github.event.inputs.Version }} .
-          # docker push lifailon/openrouter-bot:${{ github.event.inputs.Version }}
           docker buildx build \
             --platform \
             linux/amd64,linux/arm64 \
-            -t lifailon/openrouter-bot:${{ github.event.inputs.Version }} \
+            -t ${{ secrets.DOCKER_USERNAME }}/openrouter-bot:${{ github.event.inputs.Version }} \
             --push .
         continue-on-error: true
 
@@ -57,14 +55,18 @@ jobs:
         with:
           go-version: 1.25
 
+      - name: Run tests
+        if: ${{ github.event.inputs.Binary == 'true' }}
+        run: go test ./...
+
       - name: Build binaries
         if: ${{ github.event.inputs.Binary == 'true' }}
         run: |
           mkdir -p bin
           architectures=("amd64" "arm64")
           for arch in "${architectures[@]}"; do
-              CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-windows-$arch.exe main.go
-              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-linux-$arch main.go
+              CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-windows-$arch.exe .
+              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-linux-$arch .
               # CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-darwin-$arch main.go
           done
           ls -lh bin
