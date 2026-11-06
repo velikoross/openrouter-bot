@@ -98,7 +98,7 @@ func (c *Config) CanViewStats(userID int64) bool {
 
 func newViper(configPath string) (*viper.Viper, error) {
 	v := viper.New()
-	v.SetDefault("MAX_TOKENS", 2000)
+	v.SetDefault("MAX_TOKENS", 8000) // reasoning models spend part of it on thinking
 	v.SetDefault("TEMPERATURE", 0.7)
 	v.SetDefault("TOP_P", 0.7)
 	v.SetDefault("TYPE", "openrouter")

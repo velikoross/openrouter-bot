@@ -65,10 +65,12 @@ type Client struct {
 
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
-		BaseURL:     strings.TrimRight(baseURL, "/"),
-		APIKey:      apiKey,
-		HTTP:        &http.Client{Timeout: 20 * time.Second},
-		RetryDelays: []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second},
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		APIKey:  apiKey,
+		HTTP:    &http.Client{Timeout: 20 * time.Second},
+		// ~2 minutes in total: on OpenRouter the generation stats sometimes
+		// appear only after tens of seconds.
+		RetryDelays: []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second},
 	}
 }
 

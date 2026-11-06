@@ -558,3 +558,106 @@ func TestStatePersistsAcrossRestart(t *testing.T) {
 		t.Errorf("model after restart = %q", store.Model())
 	}
 }
+
+// Reasoning models spend max_tokens on thinking: empty content with
+// finish_reason "length" must be retried with a bigger limit.
+func lengthLimited(id string) openai.ChatCompletionResponse {
+	return openai.ChatCompletionResponse{ID: id, Choices: []openai.ChatCompletionChoice{{
+		Message: openai.ChatCompletionMessage{Role: "assistant", Content: ""}, FinishReason: openai.FinishReasonLength}}}
+}
+
+func TestReasoningModelRetriedWithBiggerLimit(t *testing.T) {
+	e := newEnv(t)
+	e.catalog.cost = 0.01
+	e.llm.handler = func(_ context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		if req.MaxTokens < 16000 {
+			return lengthLimited("gen-a"), nil
+		}
+		r := answer("Почистите кеш")
+		r.ID = "gen-b"
+		return r, nil
+	}
+	e.private(userID, "Как почистить место")
+
+	reqs := e.llm.Requests()
+	if len(reqs) != 2 || reqs[0].MaxTokens != 100 || reqs[1].MaxTokens != 16000 {
+		t.Fatalf("requests: %d, max_tokens %v", len(reqs), func() []int {
+			var m []int
+			for _, r := range reqs {
+				m = append(m, r.MaxTokens)
+			}
+			return m
+		}())
+	}
+	if txt := e.texts(); len(txt) != 1 || txt[0] != "Почистите кеш" {
+		t.Errorf("got %v", txt)
+	}
+	// Both generations cost money, including the empty one.
+	if strings.Join(e.catalog.costIDs, ",") != "gen-a,gen-b" {
+		t.Errorf("cost ids = %v", e.catalog.costIDs)
+	}
+	if got := e.users.GetUser(userID, "").GetCurrentCost("total"); got != 0.02 {
+		t.Errorf("cost = %v", got)
+	}
+	// The retried exchange is in the history.
+	e.private(userID, "а ещё?")
+	msgs := e.llm.Requests()[2].Messages
+	if len(msgs) != 4 || msgs[2].Content != "Почистите кеш" {
+		t.Errorf("history: %+v", msgs)
+	}
+}
+
+func TestReasoningModelStillEmptyAfterRetry(t *testing.T) {
+	e := newEnv(t)
+	e.llm.handler = func(context.Context, openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		return lengthLimited("gen-x"), nil
+	}
+	e.private(userID, "вопрос")
+	e.private(adminID, "вопрос")
+	txt := e.texts()
+	if len(e.llm.Requests()) != 4 {
+		t.Errorf("each message should be tried twice, got %d calls", len(e.llm.Requests()))
+	}
+	if len(txt) != 2 || strings.Contains(txt[0], "MAX_TOKENS") {
+		t.Errorf("user must get a short message: %v", txt)
+	}
+	if !strings.Contains(txt[1], "MAX_TOKENS") || !strings.Contains(txt[1], "16000") {
+		t.Errorf("admin should get a hint with the limit: %q", txt[1])
+	}
+}
+
+func TestTruncatedAnswerIsDeliveredWithNote(t *testing.T) {
+	e := newEnv(t)
+	e.llm.handler = func(context.Context, openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		r := answer("Начало ответа")
+		r.Choices[0].FinishReason = openai.FinishReasonLength
+		return r, nil
+	}
+	e.private(userID, "вопрос")
+	if len(e.llm.Requests()) != 1 {
+		t.Error("a non-empty answer must not be retried")
+	}
+	txt := e.texts()
+	if len(txt) != 1 || !strings.HasPrefix(txt[0], "Начало ответа") || !strings.Contains(txt[0], "обрезан") {
+		t.Errorf("got %v", txt)
+	}
+}
+
+func TestStopDuringRetry(t *testing.T) {
+	e := newEnv(t)
+	started := make(chan struct{})
+	e.llm.handler = func(ctx context.Context, req openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error) {
+		if req.MaxTokens < 16000 {
+			return lengthLimited("gen-a"), nil
+		}
+		close(started)
+		<-ctx.Done()
+		return openai.ChatCompletionResponse{}, ctx.Err()
+	}
+	e.bot.HandleUpdate(tgbotapi.Update{Message: e.newMsg(privateChat(userID), userID, "вопрос")})
+	<-started
+	e.private(userID, "/stop")
+	if txt := e.texts(); len(txt) != 1 || txt[0] != "Запрос остановлен." {
+		t.Errorf("got %v", txt)
+	}
+}

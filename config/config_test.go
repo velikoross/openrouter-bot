@@ -75,7 +75,7 @@ assistant_prompt: |
 		t.Errorf("lang %q prompt %q", c.Lang, c.SystemPrompt)
 	}
 	// defaults
-	if c.MaxTokens != 2000 || c.BudgetPeriod != "monthly" || c.DataDir != "logs" || c.RequestTimeout != 300*time.Second || c.Model.Type != "openrouter" {
+	if c.MaxTokens != 8000 || c.BudgetPeriod != "monthly" || c.DataDir != "logs" || c.RequestTimeout != 300*time.Second || c.Model.Type != "openrouter" {
 		t.Errorf("defaults: %+v", c)
 	}
 }

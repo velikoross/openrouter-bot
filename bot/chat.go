@@ -146,7 +146,7 @@ func (b *Bot) ask(msg *tgbotapi.Message, prompt string) {
 	req := b.buildRequest(conf, conv.SystemPrompt(conf.SystemPrompt),
 		conv.Messages(conf.MaxHistorySize, conf.MaxHistoryTime), userText, imageURL)
 
-	resp, err := b.llm.CreateChatCompletion(ctx, req)
+	resp, maxTokens, err := b.complete(ctx, req, func(id string) { b.recordCost(conf, usage, id) })
 	stopTyping()
 	if err != nil {
 		switch {
@@ -168,36 +168,93 @@ func (b *Bot) ask(msg *tgbotapi.Message, prompt string) {
 		return // stopped while the answer was arriving
 	}
 
-	answer := ""
-	if len(resp.Choices) > 0 {
-		answer = cleanAnswer(resp.Choices[0].Message.Content)
-	}
+	answer, reason := answerOf(resp)
 	if answer == "" {
-		reason := ""
-		if len(resp.Choices) > 0 {
-			reason = string(resp.Choices[0].FinishReason)
+		log.Printf("Empty answer from %s (finish_reason=%q, %s)", req.Model, reason, usageInfo(resp))
+		text := b.t("emptyAnswer")
+		if reason == openai.FinishReasonLength && conf.IsAdmin(from.ID) {
+			text += "\n\n" + fmt.Sprintf(b.t("emptyAnswerLength"), maxTokens)
 		}
-		log.Printf("Empty answer from %s (finish_reason=%q)", req.Model, reason)
-		b.reply(msg, b.t("emptyAnswer"))
+		b.reply(msg, text)
 		return
 	}
 
 	conv.AddExchange(userText, answer, conf.MaxHistorySize)
-	b.sendAnswer(msg, answer)
-
-	if conf.Model.Type == "openrouter" && resp.ID != "" && b.catalog != nil {
-		id := resp.ID
-		b.goSafe(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
-			cost, err := b.catalog.GenerationCost(ctx, id)
-			if err != nil {
-				log.Printf("Cost lookup for %s failed: %v", id, err)
-				return
-			}
-			usage.AddCost(cost)
-		})
+	if reason == openai.FinishReasonLength {
+		answer += "\n\n" + b.t("truncatedAnswer")
 	}
+	b.sendAnswer(msg, answer)
+}
+
+func answerOf(resp openai.ChatCompletionResponse) (string, openai.FinishReason) {
+	if len(resp.Choices) == 0 {
+		return "", ""
+	}
+	return cleanAnswer(resp.Choices[0].Message.Content), resp.Choices[0].FinishReason
+}
+
+func usageInfo(resp openai.ChatCompletionResponse) string {
+	u := resp.Usage
+	reasoning := 0
+	if u.CompletionTokensDetails != nil {
+		reasoning = u.CompletionTokensDetails.ReasoningTokens
+	}
+	return fmt.Sprintf("completion_tokens=%d reasoning_tokens=%d", u.CompletionTokens, reasoning)
+}
+
+// complete calls the LLM. Reasoning models spend max_tokens on thinking first
+// and may run out before writing the answer (empty content, finish_reason
+// "length"); in that case the request is retried once with a bigger limit.
+// onGeneration is called for every generation id (each one costs money).
+// It returns the response and the max_tokens used for it.
+func (b *Bot) complete(ctx context.Context, req openai.ChatCompletionRequest, onGeneration func(id string)) (openai.ChatCompletionResponse, int, error) {
+	resp, err := b.llm.CreateChatCompletion(ctx, req)
+	if err != nil {
+		return resp, req.MaxTokens, err
+	}
+	if resp.ID != "" {
+		onGeneration(resp.ID)
+	}
+	answer, reason := answerOf(resp)
+	if answer != "" || reason != openai.FinishReasonLength || req.MaxTokens <= 0 {
+		return resp, req.MaxTokens, nil
+	}
+	retry := req
+	retry.MaxTokens = req.MaxTokens * 4
+	if retry.MaxTokens < 16000 {
+		retry.MaxTokens = 16000
+	}
+	log.Printf("Empty answer from %s with max_tokens=%d (%s), retrying with %d",
+		req.Model, req.MaxTokens, usageInfo(resp), retry.MaxTokens)
+	resp2, err := b.llm.CreateChatCompletion(ctx, retry)
+	if err != nil {
+		if ctx.Err() != nil {
+			return resp2, retry.MaxTokens, err // stopped or timed out
+		}
+		log.Printf("Retry failed: %v", err)
+		return resp, req.MaxTokens, nil
+	}
+	if resp2.ID != "" {
+		onGeneration(resp2.ID)
+	}
+	return resp2, retry.MaxTokens, nil
+}
+
+// recordCost asks OpenRouter for the generation cost in the background.
+func (b *Bot) recordCost(conf *config.Config, usage *user.UsageTracker, id string) {
+	if conf.Model.Type != "openrouter" || b.catalog == nil {
+		return
+	}
+	b.goSafe(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		cost, err := b.catalog.GenerationCost(ctx, id)
+		if err != nil {
+			log.Printf("Cost lookup for %s failed: %v", id, err)
+			return
+		}
+		usage.AddCost(cost)
+	})
 }
 
 func truncate(s string, n int) string {

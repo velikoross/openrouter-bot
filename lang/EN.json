@@ -48,5 +48,7 @@
   "quote": "Quoted message:\n«%s»",
   "loadText": "Processing request",
   "errorText": "Error processing request",
-  "timeoutText": "The model did not answer in time. Try again later."
+  "timeoutText": "The model did not answer in time. Try again later.",
+  "emptyAnswerLength": "The model spent the whole limit of %d tokens on reasoning even after a retry with a bigger limit. Increase MAX_TOKENS or choose another model (/set_model).",
+  "truncatedAnswer": "⚠ The answer was cut off: the token limit (MAX_TOKENS) was reached."
 }
