@@ -180,6 +180,7 @@ func TestStringMasksSecrets(t *testing.T) {
 
 func TestManagerReloadsConfig(t *testing.T) {
 	clearEnv(t)
+	ReloadDelay = 50 * time.Millisecond
 	p := writeYAML(t, "model: first\n")
 	m, err := NewManager(p)
 	if err != nil {
@@ -199,12 +200,43 @@ func TestManagerReloadsConfig(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// A broken file keeps the previous config.
-	if err := os.WriteFile(p, []byte("budget_period: weekly\n"), 0o644); err != nil {
+	// A broken or empty file keeps the previous config.
+	for _, body := range []string{"budget_period: weekly\n", ""} {
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(300 * time.Millisecond)
+		if m.GetConfig().Model.ModelName != "second" {
+			t.Errorf("config %q must not replace a valid one", body)
+		}
+	}
+}
+
+// One save in an editor = truncate + write: the empty intermediate state must
+// never become the active config.
+func TestManagerIgnoresTruncateDuringSave(t *testing.T) {
+	clearEnv(t)
+	ReloadDelay = 50 * time.Millisecond
+	p := writeYAML(t, "model: first\n")
+	m, err := NewManager(p)
+	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(300 * time.Millisecond)
-	if m.GetConfig().Model.ModelName != "second" {
-		t.Error("invalid config must not replace a valid one")
+	for i := 0; i < 20; i++ {
+		f, err := os.OpenFile(p, os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+		_, _ = f.WriteString("model: first\n")
+		f.Close()
+		if got := m.GetConfig().Model.ModelName; got != "first" {
+			t.Fatalf("iteration %d: model = %q", i, got)
+		}
+	}
+	// The final reload happens after the burst settles.
+	time.Sleep(200 * time.Millisecond)
+	if got := m.GetConfig().Model.ModelName; got != "first" {
+		t.Fatalf("model = %q", got)
 	}
 }
