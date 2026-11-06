@@ -110,3 +110,61 @@ func TestSplitMessageKeepsCodeFences(t *testing.T) {
 		t.Error("lines lost")
 	}
 }
+
+func TestTablesToLists(t *testing.T) {
+	in := `Варианты:
+
+| Решение | Docker/OCI | Maven | Raw/generic |
+|---|:---:|---:|---|
+| **JFrog Artifactory** | Да | Да | Да, Generic |
+| Gitea | Да |  | Да |
+
+Итого.`
+	want := `Варианты:
+
+**JFrog Artifactory**
+- Docker/OCI: Да
+- Maven: Да
+- Raw/generic: Да, Generic
+
+**Gitea**
+- Docker/OCI: Да
+- Raw/generic: Да
+
+Итого.`
+	if got := tablesToLists(in); got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestTwoColumnTable(t *testing.T) {
+	in := "| Команда | Что делает |\n| --- | --- |\n| `ls` | список файлов |\n| du |  |"
+	want := "- **`ls`** — список файлов\n- **du**"
+	if got := tablesToLists(in); got != want {
+		t.Errorf("got %q", got)
+	}
+	html := markdownToHTML(tablesToLists(in))
+	if html != "• <b><code>ls</code></b> — список файлов\n• <b>du</b>" {
+		t.Errorf("html %q", html)
+	}
+}
+
+func TestTablesToListsKeepsOtherPipes(t *testing.T) {
+	for _, in := range []string{
+		"```\n| a | b |\n|---|---|\n| 1 | 2 |\n```", // inside code
+		"| not a table |\nplain text",               // no separator
+		"echo a | grep b",                           // shell pipe
+	} {
+		if got := tablesToLists(in); got != in {
+			t.Errorf("%q changed to %q", in, got)
+		}
+	}
+}
+
+func TestTableAtEndOfText(t *testing.T) {
+	in := "| a | b | c |\n|--|--|--|\n| x | 1 | 2 |"
+	want := "**x**\n- b: 1\n- c: 2"
+	if got := tablesToLists(in); got != want {
+		t.Errorf("got %q", got)
+	}
+}

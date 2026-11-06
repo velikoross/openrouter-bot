@@ -300,6 +300,7 @@ func (b *Bot) buildRequest(conf *config.Config, system string, history []user.Me
 // sendAnswer converts the Markdown answer to Telegram HTML and sends it in
 // chunks. If Telegram rejects the HTML, the chunk is resent as plain text.
 func (b *Bot) sendAnswer(msg *tgbotapi.Message, answer string) {
+	answer = tablesToLists(answer)
 	for i, chunk := range splitMessage(answer, chunkLimit) {
 		m := tgbotapi.NewMessage(msg.Chat.ID, markdownToHTML(chunk))
 		m.ParseMode = tgbotapi.ModeHTML

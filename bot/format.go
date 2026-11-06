@@ -2,6 +2,7 @@ package bot
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -144,8 +145,11 @@ func renderText(s string) string {
 	return s
 }
 
-// renderInline handles `code` spans and inline formatting of one line.
+// renderInline handles `code` spans and inline formatting of one line. Code
+// spans are replaced by placeholders first, so that formatting around them
+// (e.g. **`cmd`**) still works and nothing inside them is formatted.
 func renderInline(line string) string {
+	var codes []string
 	var b strings.Builder
 	for {
 		start := strings.Index(line, "`")
@@ -156,12 +160,17 @@ func renderInline(line string) string {
 		if end < 0 {
 			break
 		}
-		b.WriteString(renderText(line[:start]))
-		b.WriteString("<code>" + escapeHTML(line[start+1:start+1+end]) + "</code>")
+		b.WriteString(strings.ReplaceAll(line[:start], "\x00", ""))
+		b.WriteString("\x00" + strconv.Itoa(len(codes)) + "\x00")
+		codes = append(codes, "<code>"+escapeHTML(line[start+1:start+1+end])+"</code>")
 		line = line[start+1+end+1:]
 	}
-	b.WriteString(renderText(line))
-	return b.String()
+	b.WriteString(strings.ReplaceAll(line, "\x00", ""))
+	out := renderText(b.String())
+	for i, c := range codes {
+		out = strings.Replace(out, "\x00"+strconv.Itoa(i)+"\x00", c, 1)
+	}
+	return out
 }
 
 func renderLine(line string) string {
@@ -232,5 +241,92 @@ func markdownToHTML(md string) string {
 		flushCode()
 	}
 	flushQuote()
+	return strings.Join(out, "\n")
+}
+
+var tableSepRe = regexp.MustCompile(`^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$`)
+
+func isTableRow(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "|") && strings.Count(t, "|") >= 2
+}
+
+func splitTableRow(line string) []string {
+	t := strings.TrimSpace(line)
+	t = strings.TrimPrefix(t, "|")
+	t = strings.TrimSuffix(t, "|")
+	t = strings.ReplaceAll(t, `\|`, "\x00")
+	cells := strings.Split(t, "|")
+	for i, c := range cells {
+		cells[i] = strings.TrimSpace(strings.ReplaceAll(c, "\x00", "|"))
+	}
+	return cells
+}
+
+func stripBold(s string) string {
+	for _, m := range []string{"**", "__"} {
+		if len(s) > 2*len(m) && strings.HasPrefix(s, m) && strings.HasSuffix(s, m) {
+			return s[len(m) : len(s)-len(m)]
+		}
+	}
+	return s
+}
+
+// tablesToLists rewrites Markdown tables (which Telegram can't display) as
+// lists: the first column becomes a bold title, the other columns become
+// "header: value" bullets. Two-column tables become "title — value" lines.
+// Code blocks are left untouched.
+func tablesToLists(md string) string {
+	lines := strings.Split(md, "\n")
+	var out []string
+	inCode := false
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inCode = !inCode
+		}
+		if inCode || !isTableRow(line) || i+1 >= len(lines) || !tableSepRe.MatchString(strings.TrimSpace(lines[i+1])) {
+			out = append(out, line)
+			continue
+		}
+		header := splitTableRow(line)
+		i += 2 // header + separator
+		var block []string
+		for ; i < len(lines) && isTableRow(lines[i]); i++ {
+			cells := splitTableRow(lines[i])
+			if len(cells) == 0 || strings.Join(cells, "") == "" {
+				continue
+			}
+			title := stripBold(cells[0])
+			if len(header) == 2 && len(cells) >= 2 {
+				item := "**" + title + "**"
+				if cells[1] != "" {
+					item += " — " + cells[1]
+				}
+				block = append(block, "- "+item)
+				continue
+			}
+			if len(block) > 0 {
+				block = append(block, "")
+			}
+			block = append(block, "**"+title+"**")
+			for j := 1; j < len(cells); j++ {
+				if cells[j] == "" {
+					continue
+				}
+				name := ""
+				if j < len(header) {
+					name = stripBold(header[j])
+				}
+				if name != "" {
+					block = append(block, "- "+name+": "+cells[j])
+				} else {
+					block = append(block, "- "+cells[j])
+				}
+			}
+		}
+		i-- // the loop increments past the last table row
+		out = append(out, block...)
+	}
 	return strings.Join(out, "\n")
 }
