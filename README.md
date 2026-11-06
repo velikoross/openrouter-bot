@@ -95,7 +95,7 @@ In a group the bot answers when it is addressed:
 Other messages are ignored, as are commands for other bots (`/ask@other_bot`).
 
 > [!IMPORTANT]
-> Bots have **privacy mode** enabled by default: in groups they only see commands with `@bot_name`, mentions and replies. Because of that plain `/ask` and short names may never reach the bot. Disable it: [@BotFather](https://t.me/BotFather) → `/setprivacy` → choose the bot → `Disable`, then **remove the bot from the group and add it again**. Alternatively make the bot a group admin. The bot logs on startup whether privacy mode is on.
+> Bots have **privacy mode** enabled by default. With it, groups still get `/ask@bot_name`, replies to the bot's messages, mentions and plain `/ask` when it is the only bot in the group. **Only short names** (`BOT_ALIASES`) don't work: Telegram does not deliver such messages. If you need them, disable it: [@BotFather](https://t.me/BotFather) → `/setprivacy` → choose the bot → `Disable`, then remove the bot from the group and add it again. The bot will then receive all group messages, but still answers only when addressed.
 
 Conversation history is kept per user per chat.
 

@@ -53,9 +53,9 @@ func main() {
 	}
 	log.Printf("Authorized as @%s (id %d)", tg.Self.UserName, tg.Self.ID)
 	if !tg.Self.CanReadAllGroupMessages {
-		log.Printf("NOTE: privacy mode is ON. In groups the bot only sees commands, replies and @mentions; "+
-			"short names (BOT_ALIASES) and plain /ask without @%s may not reach it. "+
-			"Disable it in @BotFather: /setprivacy -> Disable, then re-add the bot to the group.", tg.Self.UserName)
+		log.Printf("Privacy mode is ON: in groups the bot gets /cmd@%s, replies to its messages and mentions, "+
+			"but not messages with short names (BOT_ALIASES). To use short names: @BotFather -> /setprivacy -> Disable.",
+			tg.Self.UserName)
 	}
 	if _, err := tg.Request(tgbotapi.DeleteWebhookConfig{}); err != nil {
 		log.Printf("Failed to delete webhook: %v", err)
