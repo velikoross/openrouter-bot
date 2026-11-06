@@ -47,7 +47,6 @@ jobs:
             linux/amd64,linux/arm64 \
             -t ${{ secrets.DOCKER_USERNAME }}/openrouter-bot:${{ github.event.inputs.Version }} \
             --push .
-        continue-on-error: true
 
       - name: Install Go
         if: ${{ github.event.inputs.Binary == 'true' }}
