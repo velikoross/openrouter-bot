@@ -22,6 +22,8 @@ This project allows you to launch your Telegram bot in a few minutes to communic
     <img src="./img/commands.png">
 </details>
 
+> Step-by-step server setup (in Russian): [DEPLOY_RU.md](DEPLOY_RU.md)
+
 ## Preparation
 
 - Register with [OpenRouter](https://openrouter.ai) and get an [API key](https://openrouter.ai/settings/keys).

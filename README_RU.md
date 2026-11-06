@@ -22,6 +22,8 @@
     <img src="./img/commands.png">
 </details>
 
+> Пошаговая инструкция для нового сервера: [DEPLOY_RU.md](DEPLOY_RU.md)
+
 ## Подготовка
 
 - Зарегистрируйтесь в [OpenRouter](https://openrouter.ai) и получите [API ключ](https://openrouter.ai/settings/keys).
