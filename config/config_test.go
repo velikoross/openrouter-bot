@@ -12,7 +12,7 @@ var envKeys = []string{
 	"TELEGRAM_BOT_TOKEN", "API_KEY", "MODEL", "TYPE", "BASE_URL", "ADMIN_IDS", "ALLOWED_USER_IDS",
 	"LANG", "BOT_LANG", "VISION", "BOT_ALIASES", "MODEL_PRESETS", "BUDGET_PERIOD", "GUEST_BUDGET",
 	"USER_BUDGET", "MAX_HISTORY_SIZE", "MAX_HISTORY_TIME", "ASSISTANT_PROMPT", "DATA_DIR",
-	"REQUEST_TIMEOUT", "STATS_MIN_ROLE",
+	"REQUEST_TIMEOUT", "STATS_MIN_ROLE", "LOG_TEXT_LENGTH",
 }
 
 func clearEnv(t *testing.T) {
@@ -75,7 +75,7 @@ assistant_prompt: |
 		t.Errorf("lang %q prompt %q", c.Lang, c.SystemPrompt)
 	}
 	// defaults
-	if c.MaxTokens != 8000 || c.BudgetPeriod != "monthly" || c.DataDir != "logs" || c.RequestTimeout != 300*time.Second || c.Model.Type != "openrouter" {
+	if c.MaxTokens != 8000 || c.BudgetPeriod != "monthly" || c.DataDir != "logs" || c.RequestTimeout != 300*time.Second || c.Model.Type != "openrouter" || c.LogTextLength != 20 {
 		t.Errorf("defaults: %+v", c)
 	}
 }

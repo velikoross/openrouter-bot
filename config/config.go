@@ -55,6 +55,9 @@ type Config struct {
 	// DataDir stores usage statistics and runtime state (selected model).
 	DataDir        string
 	RequestTimeout time.Duration
+	// LogTextLength: how many characters of user messages are written to the
+	// log (0 = none, -1 = everything).
+	LogTextLength int
 }
 
 type ModelParameters struct {
@@ -111,6 +114,7 @@ func newViper(configPath string) (*viper.Viper, error) {
 	v.SetDefault("STATS_MIN_ROLE", "ADMIN")
 	v.SetDefault("DATA_DIR", "logs")
 	v.SetDefault("REQUEST_TIMEOUT", 300)
+	v.SetDefault("LOG_TEXT_LENGTH", 20)
 
 	if configPath != "" {
 		v.SetConfigFile(configPath)
@@ -170,6 +174,7 @@ func Load(configPath string) (*Config, error) {
 		ModelPresets:       parseList(v.Get("MODEL_PRESETS")),
 		DataDir:            v.GetString("DATA_DIR"),
 		RequestTimeout:     time.Duration(v.GetInt("REQUEST_TIMEOUT")) * time.Second,
+		LogTextLength:      v.GetInt("LOG_TEXT_LENGTH"),
 	}
 
 	switch conf.BudgetPeriod {
@@ -283,6 +288,7 @@ func (c *Config) String() string {
 		"ModelPresets":     c.ModelPresets,
 		"DataDir":          c.DataDir,
 		"RequestTimeout":   c.RequestTimeout,
+		"LogTextLength":    c.LogTextLength,
 	}
 	keys := make([]string, 0, len(fields))
 	for k := range fields {

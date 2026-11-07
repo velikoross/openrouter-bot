@@ -206,6 +206,7 @@ func baseConfig() *config.Config {
 		BotAliases:         []string{"пирдун", "бот"},
 		ModelPresets:       []string{"preset/one:free", "preset/two"},
 		RequestTimeout:     5 * time.Second,
+		LogTextLength:      20,
 	}
 }
 

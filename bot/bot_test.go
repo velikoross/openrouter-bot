@@ -1,8 +1,11 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -659,5 +662,44 @@ func TestStopDuringRetry(t *testing.T) {
 	e.private(userID, "/stop")
 	if txt := e.texts(); len(txt) != 1 || txt[0] != "Запрос остановлен." {
 		t.Errorf("got %v", txt)
+	}
+}
+
+func TestLogPreview(t *testing.T) {
+	long := "Как почистить место на сервере с докером"
+	cases := []struct {
+		text  string
+		limit int
+		want  string
+	}{
+		{long, 20, `"Как почистить место…" (40 chars)`},
+		{"коротко", 20, `"коротко"`},
+		{long, 0, "<40 chars>"},
+		{"много\n\nстрок", -1, `"много строк"`},
+		{"", 20, ""},
+	}
+	for _, c := range cases {
+		if got := logPreview(c.text, c.limit); got != c.want {
+			t.Errorf("logPreview(%q, %d) = %s, want %s", c.text, c.limit, got, c.want)
+		}
+	}
+}
+
+func TestLogDoesNotContainFullMessage(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	e := newEnv(t, func(c *config.Config) { c.LogTextLength = 20 })
+	e.private(userID, "мой пароль от банка 123456 и секретные данные")
+	e.private(userID, "/reset Ты мой личный помощник по налогам")
+	out := buf.String()
+	for _, secret := range []string{"123456", "секретные", "налогам"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("log contains %q:\n%s", secret, out)
+		}
+	}
+	if !strings.Contains(out, `"мой пароль от банка…"`) || !strings.Contains(out, "/reset ") {
+		t.Errorf("log should keep a short preview and the command name:\n%s", out)
 	}
 }

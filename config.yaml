@@ -41,6 +41,10 @@ request_timeout: 300
 # Mount it as a volume to keep data between restarts.
 data_dir: logs
 
+# How many characters of user messages are written to the log, for privacy
+# (0 = don't log the text at all, -1 = log everything)
+log_text_length: 20
+
 # Assistant configuration
 assistant_prompt: |
   • Read the entire convo history line by line before answering. You are Assistant.

@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -140,7 +141,7 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		if !ok {
 			return // command for another bot, e.g. /ask@other_bot
 		}
-		b.logMessage(msg, msg.Text)
+		b.logMessage(msg, "/"+cmd, msg.CommandArguments())
 		b.handleCommand(msg, cmd)
 		return
 	}
@@ -149,15 +150,34 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	if !ok {
 		return
 	}
-	b.logMessage(msg, text)
+	b.logMessage(msg, "", text)
 	b.goSafe(func() { b.ask(msg, text) })
 }
 
-func (b *Bot) logMessage(msg *tgbotapi.Message, text string) {
-	if len([]rune(text)) > 100 {
-		text = string([]rune(text)[:100]) + "…"
+// logMessage logs who wrote to the bot. For privacy only the first
+// LOG_TEXT_LENGTH characters of the text are logged (commands are logged by
+// name, their arguments are shortened the same way).
+func (b *Bot) logMessage(msg *tgbotapi.Message, cmd, text string) {
+	line := strings.TrimSpace(cmd + " " + logPreview(text, b.conf().LogTextLength))
+	log.Printf("[%s %d] @%s (id %d): %s", msg.Chat.Type, msg.Chat.ID, msg.From.UserName, msg.From.ID, line)
+}
+
+// logPreview shortens text for logs: limit < 0 keeps it whole, 0 hides it.
+func logPreview(text string, limit int) string {
+	text = strings.Join(strings.Fields(text), " ") // one line in the log
+	r := []rune(text)
+	switch {
+	case len(r) == 0:
+		return ""
+	case limit < 0:
+		return strconv.Quote(text)
+	case limit == 0:
+		return fmt.Sprintf("<%d chars>", len(r))
+	case len(r) > limit:
+		return strconv.Quote(strings.TrimRight(string(r[:limit]), " ")+"…") + fmt.Sprintf(" (%d chars)", len(r))
+	default:
+		return strconv.Quote(text)
 	}
-	log.Printf("[%s %d] @%s (id %d): %q", msg.Chat.Type, msg.Chat.ID, msg.From.UserName, msg.From.ID, text)
 }
 
 // commandFor returns the lower-cased command name if it is meant for this bot.
